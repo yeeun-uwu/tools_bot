@@ -1,3 +1,12 @@
+__pycache__/
+*.py[cod]
+.env
 config.json
-tools.db
-/logs/*
+.DS_Store
+
+# 데이터 폴더 무시 (백업은 별도로 수행)
+data/tools.db
+data/logs/*
+
+# 만약 IDE 설정 파일이 있다면 추가 (.vscode 등)
+.vscode/
