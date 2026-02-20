@@ -2,6 +2,7 @@ import aiosqlite
 import os
 import datetime
 import pytz
+from sympy import limit
 
 # 데이터 저장 경로 설정
 DATA_DIR = "data"
@@ -50,7 +51,8 @@ class Database:
                     channel_id INTEGER,
                     role_id INTEGER,
                     last_cleared_at TEXT, -- 마지막 비움 시간
-                    dashboard_msg_id INTEGER
+                    dashboard_msg_id INTEGER,
+                    last_cleared_user_id INTEGER -- 마지막으로 비운 유저 ID
                 )
             ''')
 
@@ -62,7 +64,27 @@ class Database:
                 )
             ''')
 
-            #
+            # [추가] 5. 상자 비움 로그 테이블
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS mining_clear_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    cleared_at TEXT
+                )
+            ''')
+
+            # [추가] 6. 로그 100개 제한 트리거 (새 데이터 삽입 시 자동 실행)
+            await db.execute('''
+                CREATE TRIGGER IF NOT EXISTS limit_logs_size
+                AFTER INSERT ON mining_clear_logs
+                BEGIN
+                    DELETE FROM mining_clear_logs 
+                    WHERE id NOT IN (
+                        SELECT id FROM mining_clear_logs 
+                        ORDER BY id DESC LIMIT 100
+                    );
+                END;
+            ''')
             
             await db.commit()
             print("[DB] 데이터베이스 및 테이블 초기화 완료")
@@ -72,13 +94,13 @@ class Database:
 
     async def _migrate_schema(self, db):
         """기존 DB에 새 컬럼이 없을 경우 자동 추가"""
-        # 예: tools 테이블에 borrower_nick 컬럼 확인
-        async with db.execute("PRAGMA table_info(tools)") as cursor:
+
+        # last_cleared_user_id 컬럼 확인 후 추가
+        async with db.execute("PRAGMA table_info(mining_config)") as cursor:
             columns = [row[1] for row in await cursor.fetchall()]
-            
-        if 'borrower_nick' not in columns:
-            print("[DB] 'borrower_nick' 컬럼 추가 중...")
-            await db.execute("ALTER TABLE tools ADD COLUMN borrower_nick TEXT")
+
+        if 'last_cleared_user_id' not in columns:
+            await db.execute("ALTER TABLE mining_config ADD COLUMN last_cleared_user_id INTEGER")
             await db.commit()
 
     # ==========================
@@ -165,7 +187,7 @@ class Database:
     
     async def get_mining_config(self):
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT channel_id, role_id, last_cleared_at, dashboard_msg_id FROM mining_config WHERE id=1") as cursor:
+            async with db.execute("SELECT channel_id, role_id, last_cleared_at, dashboard_msg_id, last_cleared_user_id FROM mining_config WHERE id=1") as cursor:
                 return await cursor.fetchone()
 
     async def set_mining_config(self, channel_id, role_id):
@@ -177,9 +199,13 @@ class Database:
             ''', (channel_id, role_id))
             await db.commit()
 
-    async def update_mining_last_cleared(self, time_str):
+    async def update_mining_last_cleared(self, time_str, user_id=None):
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE mining_config SET last_cleared_at=? WHERE id=1", (time_str,))
+            await db.execute("UPDATE mining_config SET last_cleared_at=?, last_cleared_user_id=? WHERE id=1", (time_str, user_id))
+            
+            # user_id가 넘어왔을 때만(버튼을 눌렀을 때만) 로그 테이블에 추가
+            if user_id:
+                await db.execute("INSERT INTO mining_clear_logs (user_id, cleared_at) VALUES (?, ?)", (user_id, time_str))
             await db.commit()
             
     async def update_mining_dashboard_id(self, msg_id):
@@ -207,3 +233,9 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT user_id, start_time FROM mining_users") as cursor:
                 return await cursor.fetchall()
+            
+    async def get_mining_clear_logs(self, limit=20):
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT user_id, cleared_at FROM mining_clear_logs ORDER BY cleared_at DESC LIMIT ?", (limit,)) as cursor:
+                return await cursor.fetchall()
+            

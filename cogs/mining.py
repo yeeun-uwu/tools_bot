@@ -20,7 +20,7 @@ class ClearMiningView(discord.ui.View):
 
         # DB 업데이트
         now = self.bot.db.get_korea_time()
-        await self.bot.db.update_mining_last_cleared(now)
+        await self.bot.db.update_mining_last_cleared(now, interaction.user.id)
         
         # 로그
         user_nick = await self.bot.db.get_user_nickname(interaction.user.id) or interaction.user.display_name
@@ -43,25 +43,47 @@ class ClearMiningView(discord.ui.View):
 # [UI View 2] 대시보드 부착용 버튼 (상시 유지)
 # ==========================================
 class DashboardView(discord.ui.View):
-    def __init__(self, bot, dashboard_updater):
+    def __init__(self, bot):
         super().__init__(timeout=None) # 중요: 타임아웃 없음
         self.bot = bot
-        self.update_dashboard = dashboard_updater
 
-    @discord.ui.button(label="상자 비움 (타이머 리셋)", style=discord.ButtonStyle.primary, emoji="🔄", custom_id="mining_dash_clear_btn")
+    @discord.ui.button(label="잠광 시작", style=discord.ButtonStyle.success, emoji="⛏️", custom_id="mining_dash_start_btn", row=0)
+    async def dash_start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        if await self.bot.db.add_mining_user(interaction.user.id):
+            bot_logger.info(f"[+] [Mining] 대시보드 시작: {interaction.user.name}")
+            cog = self.bot.get_cog("Mining")
+            if cog: await cog.update_dashboard()
+            await interaction.followup.send("⛏️ 잠광 시작이 기록되었습니다!", ephemeral=True)
+        else:
+            await interaction.followup.send("👀 이미 진행 중으로 등록되어 있습니다.", ephemeral=True)
+
+    @discord.ui.button(label="잠광 종료", style=discord.ButtonStyle.danger, emoji="👋", custom_id="mining_dash_end_btn", row=0)
+    async def dash_end_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        if await self.bot.db.remove_mining_user(interaction.user.id):
+            bot_logger.info(f"[-] [Mining] 대시보드 종료: {interaction.user.name}")
+            cog = self.bot.get_cog("Mining")
+            if cog: await cog.update_dashboard()
+            await interaction.followup.send("👋 수고하셨습니다! 종료 처리되었습니다.", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ 진행 중인 잠광 기록이 없습니다.", ephemeral=True)
+
+    @discord.ui.button(label="상자 비움 (타이머 리셋)", style=discord.ButtonStyle.primary, emoji="🔄", custom_id="mining_dash_clear_btn", row=1)
     async def dash_clear_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         # 권한 체크 (현재는 모두 허용)
         await interaction.response.defer()
 
         # DB 업데이트
         now = self.bot.db.get_korea_time()
-        await self.bot.db.update_mining_last_cleared(now)
+        await self.bot.db.update_mining_last_cleared(now, interaction.user.id)
         
         user_nick = await self.bot.db.get_user_nickname(interaction.user.id) or interaction.user.display_name
         bot_logger.info(f"[+] [Mining] 대시보드에서 비움/리셋: {user_nick}")
 
         # 대시보드 즉시 갱신
-        await self.update_dashboard()
+        cog = self.bot.get_cog("Mining")
+        if cog: await cog.update_dashboard()
         
         await interaction.followup.send("✅ 상자 비움 처리 완료! 타이머가 0분으로 초기화되었습니다.", ephemeral=True)
 
@@ -86,7 +108,7 @@ class Mining(commands.Cog):
         config = await self.bot.db.get_mining_config() 
         if not config: return
 
-        channel_id, _, last_cleared, msg_id = config
+        channel_id, _, last_cleared, msg_id, last_cleared_user_id = config
         channel = self.bot.get_channel(channel_id)
         if not channel: return
 
@@ -100,7 +122,18 @@ class Mining(commands.Cog):
             dt = datetime.datetime.strptime(last_cleared, '%Y-%m-%d %H:%M:%S')
             dt = kst.localize(dt) 
             timestamp = int(dt.timestamp())
-            time_field = f"<t:{timestamp}:T> (<t:{timestamp}:R>)"
+
+            clear_user_nick = "알 수 없음"
+            if last_cleared_user_id:
+                clear_user_nick = await self.bot.db.get_user_nickname(last_cleared_user_id) or f"ID:{last_cleared_user_id}"
+                if not clear_user_nick:
+                    try:
+                        u_obj = await self.bot.fetch_user(last_cleared_user_id)
+                        clear_user_nick = u_obj.display_name
+                    except:
+                        pass
+
+            time_field = f"<t:{timestamp}:T> (<t:{timestamp}:R>) - 마지막 비움: **{clear_user_nick}**님"
         else:
             time_field = "기록 없음"
             
@@ -112,7 +145,7 @@ class Mining(commands.Cog):
                 nick = await self.bot.db.get_user_nickname(uid)
                 if not nick:
                     try:
-                        u_obj = await self.bot.fetch_user(uid)
+                        u_obj = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
                         nick = u_obj.display_name
                     except:
                         nick = "Unknown"
@@ -128,11 +161,11 @@ class Mining(commands.Cog):
             embed.color = discord.Color.green()
         else:
             embed.add_field(name="🌑 잠광 인원", value="현재 잠광 중인 인원이 없습니다.", inline=False)
-            embed.set_footer(text="/잠광시작 명령어로 등록해주세요.")
+            embed.set_footer(text="/잠광시작 명령어 혹은 버튼 상호작용을 통해 등록해주세요.")
             embed.color = discord.Color.light_grey()
 
-        # [NEW] 대시보드용 버튼 뷰 생성
-        view = DashboardView(self.bot, self.update_dashboard)
+        # 대시보드용 버튼 뷰 생성
+        view = DashboardView(self.bot)
 
         # 메시지 전송/수정 로직
         dashboard_msg = None
@@ -156,7 +189,7 @@ class Mining(commands.Cog):
     async def check_mining_timer(self):
         config = await self.bot.db.get_mining_config()
         if not config: return
-        channel_id, role_id, last_cleared, _ = config
+        channel_id, role_id, last_cleared, msg_id, last_cleared_user_id = config
 
         if not last_cleared or not channel_id: return
 
@@ -303,6 +336,7 @@ class Mining(commands.Cog):
     @app_commands.describe(minutes="몇 분 전으로 돌릴까요? (예: 110 입력 시 즉시 알림 조건 충족)")
     @app_commands.default_permissions(administrator=True)
     async def force_clear_time(self, interaction: discord.Interaction, minutes: int):
+        await interaction.response.defer(ephemeral=True)
         # 1. 한국 시간 기준 계산
         kst = pytz.timezone('Asia/Seoul')
         now = datetime.datetime.now(kst)
@@ -312,18 +346,74 @@ class Mining(commands.Cog):
         time_str = target_time.strftime('%Y-%m-%d %H:%M:%S')
         
         # 2. DB 업데이트
-        await self.bot.db.update_mining_last_cleared(time_str)
+        await self.bot.db.update_mining_last_cleared(time_str, None)
         
         # 3. 로그 및 대시보드 갱신
         bot_logger.warning(f"[!] [Mining] 관리자 테스트: 비움 시간 {minutes}분 전으로 변경")
         await self.update_dashboard()
         
         # 4. 결과 메시지
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"🧪 **테스트 모드**: 마지막 비움 시간을 **{minutes}분 전**(`{time_str}`)으로 설정했습니다.\n"
             f"잠시 후 타이머 체크 주기가 돌아오면 알림이 발송될 수 있습니다.",
             ephemeral=True
         )
+
+    # ==========================================
+    # [Command 6] 비움 기록 로그 확인 (관리자)
+    # ==========================================
+    @app_commands.command(name="비움기록", description="[관리자] 최근 비움 기록을 확인합니다.")
+    @app_commands.describe(limit="몇 건의 기록을 볼까요? (기본 20)")
+    @app_commands.default_permissions(administrator=True)
+    async def view_clear_logs(self, interaction: discord.Interaction, limit: int = 20):
+        logs = await self.bot.db.get_mining_clear_logs(limit)
+        
+        if not logs:
+            await interaction.response.send_message("📝 최근 비움 기록이 없습니다.", ephemeral=True)
+            return
+
+        lines = []
+        # limit 개수까지만 화면에 보여주도록 반복 (마지막 1개는 순수하게 계산용)
+        for i in range(min(len(logs), limit)):
+            uid, time_str = logs[i]
+            
+            # 닉네임 가져오기 (최적화 적용)
+            nick = await self.bot.db.get_user_nickname(uid)
+            if not nick:
+                try:
+                    u_obj = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+                    nick = u_obj.display_name
+                except:
+                    nick = "알 수 없음"
+            
+            # 1. 초 단위까지 표시되도록 포맷 가공 (YYYY- 자르기) -> MM-DD HH:MM:SS
+            short_time = time_str[5:]
+            
+            # 2. 이전 기록과의 시간 차이 계산
+            diff_text = ""
+            # 현재 로그의 다음 인덱스(i+1)가 이전 시간 로그임 (최신순 정렬이므로)
+            if i + 1 < len(logs):
+                prev_time_str = logs[i+1][1]
+                
+                curr_dt = datetime.datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
+                prev_dt = datetime.datetime.strptime(prev_time_str, '%Y-%m-%d %H:%M:%S')
+                
+                diff = curr_dt - prev_dt
+                total_seconds = int(diff.total_seconds())
+                
+                hours, remainder = divmod(total_seconds, 3600)
+                minutes, _ = divmod(remainder, 60)
+                
+                if hours > 0:
+                    diff_text = f" `(+{hours}시간 {minutes}분)`"
+                else:
+                    diff_text = f" `(+{minutes}분)`"
+            
+            lines.append(f"• {short_time} - **{nick}**{diff_text}")
+            
+        embed = discord.Embed(title="🗑️ 최근 상자 비움 기록", description="\n".join(lines), color=discord.Color.blue())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 async def setup(bot):
     await bot.add_cog(Mining(bot))

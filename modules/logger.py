@@ -29,7 +29,7 @@ def setup_logger():
         filename=os.path.join(LOG_DIR, "bot.log"),
         when="midnight",  # 자정 기준 회전
         interval=1,       # 1일마다
-        backupCount=7,   # 30일치 로그 보관 (오래된 것 자동 삭제)
+        backupCount=7,   # 7일치 로그 보관 (오래된 것 자동 삭제)
         encoding="utf-8"
     )
     file_handler.setFormatter(formatter)

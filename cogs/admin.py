@@ -187,6 +187,10 @@ class Admin(commands.Cog):
         if b_id is None:
             return await interaction.followup.send(f"👀 **[{category}] {name}**은(는) 이미 반납된 상태입니다.")
 
+        b_name = status[1] or "알 수 없음"
+        b_nick = status[2] or ""
+        borrowed_at = status[3] or "알 수 없음"
+
         # [NEW] DM 발송 로직
         dm_result = ""
         try:
@@ -213,9 +217,24 @@ class Admin(commands.Cog):
         tools_cog = self.bot.get_cog("Tools")
         if tools_cog: await tools_cog.sync_cache()
 
+        # 레거시 메시지 로그 추가
+
+        now = self.bot.db.get_korea_time()
+        rent_str = borrowed_at[5:-3] if borrowed_at else "?"
+        return_str = now[5:-3]
+        prev_user = f"{b_nick}({b_name})" if b_nick else b_name
+
+        message = (
+        f"[ 🚨 강제 반납 실행 ]\n"
+        f"- 도구: [{category}] {name}\n"
+        f"- 대상: {prev_user}\n"
+        f"# 대여: {rent_str}\n"
+        f"# 반납: {return_str} (관리자 처리)"
+        )
+
         # 로그 및 관리자 응답
         bot_logger.info(f"[!] [Admin] 강제반납 실행: {category}-{name} (User: {b_id}) {dm_result} by {interaction.user.name}")
-        await interaction.followup.send(f"✅ **[{category}] {name}** 강제 반납 처리가 완료되었습니다. {dm_result}")
+        await interaction.followup.send(f"✅ **[{category}] {name}** 강제 반납 처리가 완료되었습니다. {dm_result}\n```diff\n- {message}```")
 
     # ==========================================
     # [Command 5] 전체 대여 현황 리포트

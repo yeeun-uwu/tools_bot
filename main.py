@@ -76,13 +76,18 @@ class MyBot(commands.Bot):
         except Exception as e:
             bot_logger.error(f"[-] [System] 커맨드 동기화 실패: {e}")
 
+        # 4. 재시작 후에도 동작하는 영구 버튼 등록
+        from cogs.mining import DashboardView
+        self.add_view(DashboardView(self))
+        bot_logger.info("[+] [System] 영구 버튼 뷰 등록 완료")
+        
     async def on_ready(self):
         """봇이 완전히 준비되었을 때 실행"""
         bot_logger.info(f"[+] [System] {self.user} (ID: {self.user.id}) 로 로그인 성공!")
         bot_logger.info(f"[i] Running on: Discord.py {discord.__version__}")
         
         # 상태 메시지 설정
-        activity = discord.Game(name="/도구목록 | 봇 관리")
+        activity = discord.Game(name="/도구목록 | /잠광시작 | 봇 관리")
         await self.change_presence(status=discord.Status.online, activity=activity)
 
 # ==========================================
