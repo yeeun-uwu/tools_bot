@@ -189,7 +189,7 @@ class Admin(commands.Cog):
 
         b_name = status[1] or "알 수 없음"
         b_nick = status[2] or ""
-        borrowed_at = status[3] or "알 수 없음"
+        rent_time = status[3]
 
         # [NEW] DM 발송 로직
         dm_result = ""
@@ -220,7 +220,7 @@ class Admin(commands.Cog):
         # 레거시 메시지 로그 추가
 
         now = self.bot.db.get_korea_time()
-        rent_str = borrowed_at[5:-3] if borrowed_at else "?"
+        rent_str = rent_time[5:-3] if rent_time else "?"
         return_str = now[5:-3]
         prev_user = f"{b_nick}({b_name})" if b_nick else b_name
 
@@ -234,7 +234,10 @@ class Admin(commands.Cog):
 
         # 로그 및 관리자 응답
         bot_logger.info(f"[!] [Admin] 강제반납 실행: {category}-{name} (User: {b_id}) {dm_result} by {interaction.user.name}")
-        await interaction.followup.send(f"✅ **[{category}] {name}** 강제 반납 처리가 완료되었습니다. {dm_result}\n```diff\n- {message}```")
+        await interaction.followup.send(f"✅ **[{category}] {name}** 강제 반납 처리가 완료되었습니다. {dm_result}", ephemeral=True)
+        
+        # 채널 전체를 대상으로 붉은 글씨 공개 로그를 전송
+        await interaction.channel.send(f"```diff\n- {message}\n```")
 
     # ==========================================
     # [Command 5] 전체 대여 현황 리포트
