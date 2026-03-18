@@ -27,4 +27,6 @@ fi
 
 # 6. 봇 실행
 echo "[*] 봇을 실행합니다..."
-python3 main.py
+mkdir -p data/logs #추가
+nohup python3 main.py >> data/logs/nohup.log 2>&1 & 
+echo "[*] 봇이 백그라운드에서 실행 중입니다. (pid:$!)"
