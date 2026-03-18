@@ -2,7 +2,6 @@ import aiosqlite
 import os
 import datetime
 import pytz
-from sympy import limit
 
 # 데이터 저장 경로 설정
 DATA_DIR = "data"
@@ -228,6 +227,12 @@ class Database:
             cursor = await db.execute("DELETE FROM mining_users WHERE user_id=?", (user_id,))
             await db.commit()
             return cursor.rowcount > 0
+        
+    async def remove_all_mining_users(self):
+        """잠광 중인 모든 유저를 한 번에 종료 처리"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM mining_users")
+            await db.commit()
 
     async def get_all_mining_users(self):
         async with aiosqlite.connect(self.db_path) as db:
@@ -236,6 +241,6 @@ class Database:
             
     async def get_mining_clear_logs(self, limit=20):
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT user_id, cleared_at FROM mining_clear_logs ORDER BY cleared_at DESC LIMIT ?", (limit,)) as cursor:
+            async with db.execute("SELECT user_id, cleared_at FROM mining_clear_logs ORDER BY cleared_at DESC LIMIT ?", (limit+1,)) as cursor:
                 return await cursor.fetchall()
             

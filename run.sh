@@ -27,4 +27,4 @@ fi
 
 # 6. 봇 실행
 echo "[*] 봇을 실행합니다..."
-python3 app.py
+python3 main.py

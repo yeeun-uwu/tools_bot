@@ -31,6 +31,12 @@ class ClearMiningView(discord.ui.View):
         button.label = f"비움 완료 ({user_nick})"
         await interaction.followup.edit_message(message_id=interaction.message.id, view=self)
 
+        # alert 상태 초기화
+        mining_cog = self.bot.get_cog("Mining")
+        if mining_cog:
+            mining_cog.alert_sent = False
+            mining_cog.alert_message = None  # 참조 해제 (이미 이 메시지가 alert_message)
+
         # 알림 메시지 삭제 예약
         await interaction.message.delete(delay=300) 
 
@@ -50,10 +56,25 @@ class DashboardView(discord.ui.View):
     @discord.ui.button(label="잠광 시작", style=discord.ButtonStyle.success, emoji="⛏️", custom_id="mining_dash_start_btn", row=0)
     async def dash_start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
+
+        # 추가 전 현재 인원 확인 (0명→1명 전환 감지용)
+        users_before = await self.bot.db.get_all_mining_users()
+ 
         if await self.bot.db.add_mining_user(interaction.user.id):
             bot_logger.info(f"[+] [Mining] 대시보드 시작: {interaction.user.name}")
+
+            # 잠광 인원이 없다가 처음 시작된 경우 → 타이머를 지금 시점으로 리셋
+            if len(users_before) == 0:
+                now = self.bot.db.get_korea_time()
+                await self.bot.db.update_mining_last_cleared(now, None)
+                bot_logger.info(f"[i] [Mining] 시작, last_cleared 리셋: {now}")
+
             cog = self.bot.get_cog("Mining")
-            if cog: await cog.update_dashboard()
+
+            if cog:
+                cog.alert_sent = False
+                await cog.update_dashboard()
+            
             await interaction.followup.send("⛏️ 잠광 시작이 기록되었습니다!", ephemeral=True)
         else:
             await interaction.followup.send("👀 이미 진행 중으로 등록되어 있습니다.", ephemeral=True)
@@ -63,7 +84,19 @@ class DashboardView(discord.ui.View):
         await interaction.response.defer()
         if await self.bot.db.remove_mining_user(interaction.user.id):
             bot_logger.info(f"[-] [Mining] 대시보드 종료: {interaction.user.name}")
+
+            users_after = await self.bot.db.get_all_mining_users()
             cog = self.bot.get_cog("Mining")
+
+            if not users_after and cog:  # 마지막 인원이 나가면 알림 메시지 삭제
+                cog.alert_sent = False
+                if cog.alert_message:
+                    try:
+                        await cog.alert_message.delete()
+                    except Exception:
+                        pass
+                    cog.alert_message = None
+            
             if cog: await cog.update_dashboard()
             await interaction.followup.send("👋 수고하셨습니다! 종료 처리되었습니다.", ephemeral=True)
         else:
@@ -83,9 +116,61 @@ class DashboardView(discord.ui.View):
 
         # 대시보드 즉시 갱신
         cog = self.bot.get_cog("Mining")
-        if cog: await cog.update_dashboard()
+        if cog:
+            cog.alert_sent = False
+            if cog.alert_message:
+                try:
+                    await cog.alert_message.delete()
+                except Exception:
+                    pass
+                cog.alert_message = None
+            await cog.update_dashboard()
         
         await interaction.followup.send("✅ 상자 비움 처리 완료! 타이머가 0분으로 초기화되었습니다.", ephemeral=True)
+
+    @discord.ui.button(label="다 거짓말쟁이들이야!!! (전체 종료)", style=discord.ButtonStyle.danger, emoji="😭", custom_id="mining_dash_end_all_btn", row=2)
+    async def dash_end_all_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+ 
+        users = await self.bot.db.get_all_mining_users()
+        if not users:
+            await interaction.followup.send("❌ 현재 잠광 중인 인원이 없습니다.", ephemeral=True)
+            return
+ 
+        count = len(users)
+        await self.bot.db.remove_all_mining_users()
+ 
+        bot_logger.info(f"[!] [Mining] 전체 종료: {count}명 by {interaction.user.name}")
+
+        dm_results = []
+        for uid, _ in users:
+            try:
+                target_user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+                embed = discord.Embed(
+                    title="거짓말쟁이!!!!!!",
+                    description="잠광이 **전체 종료** 처리되었습니다.\n**다음부터는 잊지 말고 직접 종료해 주세요!**",
+                    color=discord.Color.orange()
+                )
+                await target_user.send(embed=embed)
+                dm_results.append(f"✅ {target_user.display_name}")
+            except discord.Forbidden:
+                dm_results.append(f"🚫 {uid} (DM 차단)")
+            except Exception:
+                dm_results.append(f"❓ {uid} (DM 실패)")
+ 
+        # 알림 메시지 삭제 및 상태 초기화
+        cog = self.bot.get_cog("Mining")
+        if cog:
+            cog.alert_sent = False
+            if cog.alert_message:
+                try:
+                    await cog.alert_message.delete()
+                except Exception:
+                    pass
+                cog.alert_message = None
+            await cog.update_dashboard()
+ 
+        await interaction.followup.send(f"🛑 잠광 중인 **{count}명** 전원 종료 처리가 완료되었습니다.", ephemeral=True)
 
 
 # ==========================================
@@ -95,6 +180,7 @@ class Mining(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.alert_sent = False
+        self.alert_message = None
         self.check_mining_timer.start()
 
     async def cog_unload(self):
@@ -125,13 +211,13 @@ class Mining(commands.Cog):
 
             clear_user_nick = "알 수 없음"
             if last_cleared_user_id:
-                clear_user_nick = await self.bot.db.get_user_nickname(last_cleared_user_id) or f"ID:{last_cleared_user_id}"
+                clear_user_nick = await self.bot.db.get_user_nickname(last_cleared_user_id)
                 if not clear_user_nick:
                     try:
-                        u_obj = await self.bot.fetch_user(last_cleared_user_id)
+                        u_obj = self.bot.get_user(last_cleared_user_id) or await self.bot.fetch_user(last_cleared_user_id)
                         clear_user_nick = u_obj.display_name
-                    except:
-                        pass
+                    except Exception:
+                        clear_user_nick = f"ID:{last_cleared_user_id}"
 
             time_field = f"<t:{timestamp}:T> (<t:{timestamp}:R>) - 마지막 비움: **{clear_user_nick}**님"
         else:
@@ -194,8 +280,18 @@ class Mining(commands.Cog):
         if not last_cleared or not channel_id: return
 
         users = await self.bot.db.get_all_mining_users()
+        
         if not users:
-            self.alert_sent = False
+            # 인원이 없으면 알림 상태 초기화 + 남은 알림 메시지 삭제
+
+            if self.alert_sent or self.alert_message:
+                self.alert_sent = False
+                if self.alert_message:
+                    try:
+                        await self.alert_message.delete()
+                    except Exception:
+                        pass
+                    self.alert_message = None
             return
 
         kst = pytz.timezone('Asia/Seoul')
@@ -216,7 +312,7 @@ class Mining(commands.Cog):
                     
                     # 알림 메시지용 뷰 (DashboardView가 아님)
                     view = ClearMiningView(self.bot, self.update_dashboard)
-                    await channel.send(
+                    self.alert_message = await channel.send(
                         f"🚨 {role_mention} **상자 비움 알림**\n잠광 시작 후 1시간 50분이 경과했습니다! 상자를 비워주세요.",
                         view=view
                     )
@@ -224,7 +320,8 @@ class Mining(commands.Cog):
                     bot_logger.info(f"[+] [Mining] 시간 경과 알림 발송 ({int(minutes_diff)}분 경과)")
                     self.alert_sent = True
         else:
-            self.alert_sent = False
+            if self.alert_sent:
+                self.alert_sent = False
 
     @check_mining_timer.before_loop
     async def before_timer(self):
@@ -261,9 +358,18 @@ class Mining(commands.Cog):
         config = await self.bot.db.get_mining_config()
         if config and interaction.channel_id != config[0]:
             return await interaction.response.send_message("❌ 잠광 채널에서만 사용할 수 있습니다.", ephemeral=True)
+        
+        users_before = await self.bot.db.get_all_mining_users()
 
         if await self.bot.db.add_mining_user(interaction.user.id):
             bot_logger.info(f"[+] [Mining] 시작: {interaction.user.name}")
+
+            if len(users_before) == 0:  # 0명 → 1명 전환이면 타이머 리셋
+                now = self.bot.db.get_korea_time()
+                await self.bot.db.update_mining_last_cleared(now, None)
+                self.alert_sent = False
+                bot_logger.info(f"[i] [Mining] 인원 0→1 전환, last_cleared 리셋: {now}")
+
             await interaction.response.send_message("⛏️ 잠광 시작이 기록되었습니다!", ephemeral=True)
             await self.update_dashboard()
         else:
@@ -280,8 +386,20 @@ class Mining(commands.Cog):
             users = await self.bot.db.get_all_mining_users()
             remain_msg = f"(남은 인원: {len(users)}명)" if users else "(모두 종료됨)"
             
+            cog = self.bot.get_cog("Mining")
+
+            if not users:  # 마지막 인원이 나가면 알림 메시지 삭제
+                if cog:
+                    cog.alert_sent = False
+                    if cog.alert_message:
+                        try:
+                            await cog.alert_message.delete()
+                        except Exception:
+                            pass
+                        cog.alert_message = None
+
+            await cog.update_dashboard()
             await interaction.response.send_message(f"👋 수고하셨습니다! {remain_msg}", ephemeral=True)
-            await self.update_dashboard()
         else:
             await interaction.response.send_message("❌ 진행 중인 잠광 기록이 없습니다.", ephemeral=True)
 
@@ -312,7 +430,17 @@ class Mining(commands.Cog):
                 return "DM 실패"
 
         if action == "start":
+
+            users_before = await self.bot.db.get_all_mining_users()
+
             if await self.bot.db.add_mining_user(user.id):
+
+                if len(users_before) == 0:  # 0→1 전환 시 타이머 리셋
+                    now = self.bot.db.get_korea_time()
+                    await self.bot.db.update_mining_last_cleared(now, None)
+                    self.alert_sent = False
+                    bot_logger.info(f"[i] [Mining] 인원 0→1 전환(강제시작), last_cleared 리셋: {now}")
+
                 dm_result = await send_dm_warning(user, "시작")
                 await interaction.followup.send(f"✅ **{user.display_name}**님을 시작 상태로 등록했습니다. ({dm_result})")
                 bot_logger.info(f"[+] [Mining] 강제시작: {user.name} by {interaction.user.name}")
@@ -321,6 +449,18 @@ class Mining(commands.Cog):
         
         else: 
             if await self.bot.db.remove_mining_user(user.id):
+
+                users_after = await self.bot.db.get_all_mining_users()
+
+                if not users_after:  # 마지막 인원이면 알림 메시지 삭제
+                    self.alert_sent = False
+                    if self.alert_message:
+                        try:
+                            await self.alert_message.delete()
+                        except Exception:
+                            pass
+                        self.alert_message = None
+
                 dm_result = await send_dm_warning(user, "종료")
                 await interaction.followup.send(f"✅ **{user.display_name}**님을 종료 처리했습니다. ({dm_result})")
                 bot_logger.info(f"[-] [Mining] 강제종료: {user.name} by {interaction.user.name}")
