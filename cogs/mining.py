@@ -72,7 +72,8 @@ class DashboardView(discord.ui.View):
             cog = self.bot.get_cog("Mining")
 
             if cog:
-                cog.alert_sent = False
+                if len(users_before) == 0:
+                    cog.alert_sent = False
                 await cog.update_dashboard()
             
             await interaction.followup.send("⛏️ 잠광 시작이 기록되었습니다!", ephemeral=True)
@@ -310,6 +311,13 @@ class Mining(commands.Cog):
                 if channel:
                     role_mention = f"<@&{role_id}>" if role_id else "@here"
                     
+                    # 혹시 이전 알림 메시지가 남아있다면 삭제 (다중 알림 방지)
+                    if self.alert_message:
+                        try:
+                            await self.alert_message.delete()
+                        except Exception:
+                            pass
+
                     # 알림 메시지용 뷰 (DashboardView가 아님)
                     view = ClearMiningView(self.bot, self.update_dashboard)
                     self.alert_message = await channel.send(
@@ -326,6 +334,10 @@ class Mining(commands.Cog):
     @check_mining_timer.before_loop
     async def before_timer(self):
         await self.bot.wait_until_ready()
+
+    @check_mining_timer.error
+    async def timer_error(self, error):
+        bot_logger.error(f"[-] [Mining] 백그라운드 타이머 작동 중 예외 발생: {error}")
 
     # ==========================================
     # [Command 1] 설정 (관리자)
